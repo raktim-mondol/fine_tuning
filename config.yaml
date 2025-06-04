@@ -1,0 +1,61 @@
+# Model configuration
+model:
+  model_id: "google/medgemma-4b-pt"
+  torch_dtype: "bfloat16"  # Options: bfloat16, float16, float32
+  attn_implementation: "eager"  # Options: eager, flash_attention_2
+  device_map: "auto"
+  trust_remote_code: true
+
+# LoRA configuration
+lora:
+  r: 16                    # Rank of adaptation matrices (8, 16, 32, 64)
+  lora_alpha: 16           # Scaling parameter (usually same as r)
+  lora_dropout: 0.05       # Dropout rate for LoRA layers
+  target_modules: "all-linear"  # Apply to all linear layers
+  bias: "none"             # Don't adapt bias terms
+  task_type: "CAUSAL_LM"
+
+# Training configuration
+training:
+  output_dir: "./medgemma-histpath-finetuned"
+  num_epochs: 3                          # Number of training epochs
+  per_device_train_batch_size: 4         # Training batch size per GPU
+  per_device_eval_batch_size: 4          # Evaluation batch size per GPU
+  gradient_accumulation_steps: 2         # Accumulate gradients over steps
+  learning_rate: 2e-4                    # Learning rate
+  weight_decay: 0.01                     # L2 regularization
+  max_grad_norm: 1.0                     # Gradient clipping
+  lr_scheduler_type: "cosine"            # Learning rate scheduler
+  warmup_ratio: 0.1                      # Warmup ratio
+  bf16: true                             # Use bfloat16 precision
+  dataloader_num_workers: 4              # Number of data loading workers
+  max_seq_length: 512                    # Maximum sequence length
+  save_strategy: "epoch"                 # When to save checkpoints
+  evaluation_strategy: "epoch"           # When to evaluate
+  logging_steps: 10                      # Log every N steps
+  save_total_limit: 3                    # Keep only best 3 checkpoints
+  load_best_model_at_end: true           # Load best model after training
+  metric_for_best_model: "eval_loss"     # Metric for best model selection
+  greater_is_better: false               # Lower eval_loss is better
+  early_stopping_patience: 2             # Early stopping patience
+  early_stopping_threshold: 0.01        # Early stopping threshold
+
+# Data configuration
+data:
+  data_path: ""                          # TO BE SET: Path to your histopath dataset
+  train_split: 0.7                       # Training data fraction
+  val_split: 0.15                        # Validation data fraction  
+  test_split: 0.15                       # Test data fraction
+  max_patches_per_patient: 10            # Maximum patches per patient
+  min_patches_per_patient: 1             # Minimum patches required per patient
+  image_extensions:                      # Supported image formats
+    - ".jpg"
+    - ".jpeg"
+    - ".png"
+    - ".tiff"
+    - ".tif"
+    - ".bmp"
+
+# General configuration
+seed: 42                                 # Random seed for reproducibility
+hf_token: ""                            # TO BE SET: Your HuggingFace token
