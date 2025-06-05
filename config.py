@@ -42,10 +42,13 @@ class TrainingConfig:
     bf16: bool = True
     dataloader_num_workers: int = 4
     max_seq_length: int = 512
+    # Strategies for logging, saving, evaluation
+    logging_strategy: str = "steps"
     save_strategy: str = "epoch"
     evaluation_strategy: str = "epoch"
     logging_steps: int = 10
     save_total_limit: int = 3
+    report_to: Optional[List[str]] = None
     load_best_model_at_end: bool = True
     metric_for_best_model: str = "eval_loss"
     greater_is_better: bool = False
