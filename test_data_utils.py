@@ -58,7 +58,7 @@ class TestDataUtils(unittest.TestCase):
         # Test various filename formats
         self.assertEqual(self.processor._extract_patient_id("patient123_patch001.jpg"), "patient123")
         self.assertEqual(self.processor._extract_patient_id("P123_001.png"), "P123")
-        self.assertEqual(self.processor._extract_patient_id("case_456_slide_1_patch_2.tif"), "case_456_slide_1") # Adjusted expectation
+        self.assertEqual(self.processor._extract_patient_id("case_456_slide_1_patch_2.tif"), "case_456_slide_1") # Should split on _patch_
         self.assertEqual(self.processor._extract_patient_id("abc_def_ghi.jpeg"), "abc_def") # Adjusted expectation based on rsplit
         self.assertEqual(self.processor._extract_patient_id("TestID007.bmp"), "TestID007") # No underscore
 
