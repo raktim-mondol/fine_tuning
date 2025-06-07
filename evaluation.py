@@ -60,14 +60,14 @@ class MedGemmaEvaluator:
         print(f"✅ Model loaded from {model_dir}")
     
     def predict_single_image(self, 
-                           image_path: str, 
+                           image_input, 
                            temperature: float = 0.1,
                            max_new_tokens: int = 50) -> str:
         """
         Predict histopathology subtype for a single image
         
         Args:
-            image_path: Path to the histopathology image
+            image_input: Path to the histopathology image or PIL Image object
             temperature: Sampling temperature
             max_new_tokens: Maximum tokens to generate
             
@@ -75,7 +75,11 @@ class MedGemmaEvaluator:
             Predicted subtype as string
         """
         # Load and process image
-        image = Image.open(image_path).convert("RGB")
+        if isinstance(image_input, str):
+            image = Image.open(image_input).convert("RGB")
+        else:
+            # Assume it's already a PIL Image
+            image = image_input.convert("RGB") if hasattr(image_input, 'convert') else image_input
         input_text = "Classify the histopathology subtype in this image:"
         
         # Prepare inputs
@@ -136,8 +140,9 @@ class MedGemmaEvaluator:
                 
                 try:
                     # Get prediction
+                    image_input = sample.get("image_path", sample.get("image"))
                     pred = self.predict_single_image(
-                        sample["image_path"] if "image_path" in sample else sample["image"],
+                        image_input,
                         temperature=temperature
                     )
                     
@@ -311,9 +316,8 @@ class MedGemmaEvaluator:
             patient_id = sample.get("patient_id", "unknown")
             
             # Get prediction for this patch
-            pred = self.predict_single_image(
-                sample["image_path"] if "image_path" in sample else sample["image"]
-            )
+            image_input = sample.get("image_path", sample.get("image"))
+            pred = self.predict_single_image(image_input)
             
             patient_predictions[patient_id].append(pred)
             patient_ground_truth[patient_id] = sample["subtype"]  # Assuming same for all patches

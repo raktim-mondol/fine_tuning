@@ -175,16 +175,16 @@ class HistopathDataProcessor:
         # Normalize ratios if they don't sum to 1
         current_total_ratio = train_ratio + val_ratio + test_ratio
         if not (0.99 < current_total_ratio < 1.01): # Allow for small float inaccuracies
-             print(f"⚠️ Ratios do not sum to 1. Normalizing: train={train_ratio}, val={val_ratio}, test={test_ratio}")
-             train_ratio /= current_total_ratio
-             val_ratio /= current_total_ratio
-             test_ratio /= current_total_ratio
+            print(f"⚠️ Ratios do not sum to 1. Normalizing: train={train_ratio}, val={val_ratio}, test={test_ratio}")
+            train_ratio /= current_total_ratio
+            val_ratio /= current_total_ratio
+            test_ratio /= current_total_ratio
 
         # Group patients by class for stratified splitting
         patients_by_class = defaultdict(list)
         # Ensure patient_data is populated from the most recent scan
         if not self.patient_data:
-             raise ValueError("patient_data is empty. Run scan_dataset_directory first.")
+            raise ValueError("patient_data is empty. Run scan_dataset_directory first.")
 
         for patient_id, patches in self.patient_data.items():
             if not patches: continue # Skip if patient has no patches listed
@@ -195,10 +195,6 @@ class HistopathDataProcessor:
 
         for class_name, patients in patients_by_class.items():
             random.shuffle(patients)
-
-            n_patients_in_class = len(patients)
-            n_train = max(0, int(round(n_patients_in_class * train_ratio)))
-            n_patients_in_class = len(patients)
 
             n_patients_in_class = len(patients)
 
@@ -212,41 +208,53 @@ class HistopathDataProcessor:
             # Prioritize splits that have a ratio > 0 but got 0 patients
             if remainder > 0 and val_ratio > 0 and n_val == 0:
                 n_val += 1
-                remainder -=1
+                remainder -= 1
             if remainder > 0 and test_ratio > 0 and n_test == 0:
                 n_test += 1
-                remainder -=1
+                remainder -= 1
 
             # Distribute any further remainder, typically to train or largest specified split
             if remainder > 0:
                 if train_ratio >= val_ratio and train_ratio >= test_ratio: # Train is largest or equal
                     n_train += remainder
                 elif val_ratio >= test_ratio: # Val is largest or equal (and larger than train)
-                     n_val += remainder
+                    n_val += remainder
                 else: # Test is largest
-                     n_test += remainder
+                    n_test += remainder
 
             # Correct potential over-assignment from remainder logic if a split had 0 ratio
             if train_ratio == 0 and n_train > 0:
-                if val_ratio > 0 : n_val += n_train
-                elif test_ratio > 0 : n_test += n_train
+                if val_ratio > 0:
+                    n_val += n_train
+                elif test_ratio > 0:
+                    n_test += n_train
                 else: # This case should ideally not happen if total ratio is 1
-                    if n_patients_in_class > 0 : n_train = n_patients_in_class # assign all to train if others are 0
-                if train_ratio == 0 : n_train = 0 # ensure it's zero if ratio is zero
+                    if n_patients_in_class > 0:
+                        n_train = n_patients_in_class # assign all to train if others are 0
+                if train_ratio == 0:
+                    n_train = 0 # ensure it's zero if ratio is zero
 
             if val_ratio == 0 and n_val > 0:
-                if train_ratio > 0 : n_train += n_val
-                elif test_ratio > 0 : n_test += n_val
+                if train_ratio > 0:
+                    n_train += n_val
+                elif test_ratio > 0:
+                    n_test += n_val
                 else:
-                    if n_patients_in_class > 0 : n_val = n_patients_in_class
-                if val_ratio == 0 : n_val = 0
+                    if n_patients_in_class > 0:
+                        n_val = n_patients_in_class
+                if val_ratio == 0:
+                    n_val = 0
 
             if test_ratio == 0 and n_test > 0:
-                if train_ratio > 0 : n_train += n_test
-                elif val_ratio > 0 : n_val += n_test
+                if train_ratio > 0:
+                    n_train += n_test
+                elif val_ratio > 0:
+                    n_val += n_test
                 else:
-                    if n_patients_in_class > 0 : n_test = n_patients_in_class
-                if test_ratio == 0 : n_test = 0
+                    if n_patients_in_class > 0:
+                        n_test = n_patients_in_class
+                if test_ratio == 0:
+                    n_test = 0
 
             # Ensure sum matches n_patients_in_class after adjustments
             # This is a final guard. If logic above is perfect, this might not be strictly needed.
@@ -255,20 +263,29 @@ class HistopathDataProcessor:
                 # If sum is less, add deficit to the largest ratio split
                 if final_sum < n_patients_in_class:
                     deficit = n_patients_in_class - final_sum
-                    if train_ratio >= val_ratio and train_ratio >= test_ratio: n_train += deficit
-                    elif val_ratio >= test_ratio: n_val += deficit
-                    else: n_test += deficit
+                    if train_ratio >= val_ratio and train_ratio >= test_ratio:
+                        n_train += deficit
+                    elif val_ratio >= test_ratio:
+                        n_val += deficit
+                    else:
+                        n_test += deficit
                 # If sum is more, remove surplus from smallest non-zero ratio split that has items
                 elif final_sum > n_patients_in_class:
                     surplus = final_sum - n_patients_in_class
                     # Try removing from smallest positive ratio split first
-                    if test_ratio > 0 and n_test >= surplus: n_test -= surplus
-                    elif val_ratio > 0 and n_val >= surplus: n_val -= surplus
-                    elif train_ratio > 0 and n_train >= surplus: n_train -= surplus
+                    if test_ratio > 0 and n_test >= surplus:
+                        n_test -= surplus
+                    elif val_ratio > 0 and n_val >= surplus:
+                        n_val -= surplus
+                    elif train_ratio > 0 and n_train >= surplus:
+                        n_train -= surplus
                     else: # fallback if all are zero ratio but have counts (should not happen)
-                         if n_test >= surplus: n_test -= surplus
-                         elif n_val >= surplus: n_val -= surplus
-                         else: n_train -= surplus
+                        if n_test >= surplus:
+                            n_test -= surplus
+                        elif n_val >= surplus:
+                            n_val -= surplus
+                        else:
+                            n_train -= surplus
 
 
             train_patients = patients[:n_train]
@@ -381,9 +398,9 @@ class HistopathDataProcessor:
                 if isinstance(value, np.ndarray):
                     serializable_info[key] = value.tolist()
                 elif isinstance(value, (Path, torch.dtype)):
-                     serializable_info[key] = str(value)
+                    serializable_info[key] = str(value)
                 elif isinstance(value, set):
-                     serializable_info[key] = list(value)
+                    serializable_info[key] = list(value)
                 elif isinstance(value, (dict, list, str, int, float, bool)) or value is None:
                     serializable_info[key] = value
                 else:

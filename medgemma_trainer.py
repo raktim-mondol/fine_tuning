@@ -415,7 +415,8 @@ def main():
     else:
         print("⚠️ config.yaml not found, using default configuration.")
         # Using default config from your Config class structure
-        config = Config()
+        from config import get_default_config
+        config = get_default_config()
 
     # Initialize fine-tuner
     fine_tuner = MedGemmaFineTuner(config)
