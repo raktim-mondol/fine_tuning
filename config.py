@@ -57,23 +57,17 @@ class TrainingConfig:
     eval_steps: int = 50
     learning_rate: float = 2e-4
     bf16: bool = True
-    max_grad_norm: float = 0.3
-    warmup_ratio: float = 0.03
-    lr_scheduler_type: str = "linear"
-    push_to_hub: bool = True
-    report_to: str = "tensorboard"
-    gradient_checkpointing_kwargs: Dict = None
-    dataset_kwargs: Dict = None
-    remove_unused_columns: bool = False
-    label_names: List[str] = None
-    
-    def __post_init__(self):
-        if self.gradient_checkpointing_kwargs is None:
-            self.gradient_checkpointing_kwargs = {"use_reentrant": False}
-        if self.dataset_kwargs is None:
-            self.dataset_kwargs = {"skip_prepare_dataset": True}
-        if self.label_names is None:
-            self.label_names = ["labels"]
+    dataloader_num_workers: int = 4
+    max_seq_length: int = 512
+    save_strategy: str = "epoch"
+    evaluation_strategy: str = "epoch"
+    logging_steps: int = 10
+    save_total_limit: int = 3
+    load_best_model_at_end: bool = True
+    metric_for_best_model: str = "eval_loss"
+    greater_is_better: bool = False
+    early_stopping_patience: int = 2
+    early_stopping_threshold: float = 0.01
 
 @dataclass
 class DataConfig:

@@ -42,18 +42,17 @@ class HistopathDataProcessor:
     Data processor for histopathology images with multiple patches per patient
     Uses conversational format compatible with MedGemma
     """
-    
+
     def __init__(self, config: DataConfig):
         self.config = config
         self.image_extensions = set(config.image_extensions)
         self.patient_data = defaultdict(list)
         self.label_mapping = {}
-        self.tissue_classes = TISSUE_CLASSES  # Can be customized
         
     def scan_dataset_directory(self, data_path: str) -> Dict[str, Any]:
         """
         Scan dataset directory to understand structure and collect metadata
-        
+
         Expected structure:
         data_path/
         ├── class1/
@@ -64,55 +63,52 @@ class HistopathDataProcessor:
         ├── class2/
         │   ├── patient3_patch1.jpg
         │   └── ...
-        
+
         Args:
             data_path: Root directory containing class folders
-            
+
         Returns:
             Dictionary with dataset statistics
         """
         data_path = Path(data_path)
         if not data_path.exists():
             raise FileNotFoundError(f"Data path does not exist: {data_path}")
-        
+
         print(f"📁 Scanning dataset directory: {data_path}")
-        
+
         # Collect data by class and patient
         class_stats = {}
         total_images = 0
-        total_patients = 0
-        
+        # Correctly initialize patient_data here for each scan
+        self.patient_data = defaultdict(list)
+
+        current_patients_in_scan = set()
+
         for class_dir in data_path.iterdir():
             if not class_dir.is_dir():
                 continue
-                
+
             class_name = class_dir.name
-            class_images = []
-            class_patients = set()
-            
+            class_images_count = 0
+            class_patients_in_this_class_dir = set()
+
             # Find all image files
             for img_file in class_dir.iterdir():
                 if img_file.suffix.lower() in self.image_extensions:
-                    # Extract patient ID from filename
-                    # Assumes format: patientID_patchID.ext or similar
                     patient_id = self._extract_patient_id(img_file.name)
-                    
-                    class_images.append({
-                        'image_path': str(img_file),
-                        'patient_id': patient_id,
-                        'class': class_name
-                    })
-                    
-                    class_patients.add(patient_id)
+
                     self.patient_data[patient_id].append({
                         'image_path': str(img_file),
                         'class': class_name
                     })
-            
+                    class_images_count +=1
+                    class_patients_in_this_class_dir.add(patient_id)
+                    current_patients_in_scan.add(patient_id) # Add to overall set for this scan
+
             class_stats[class_name] = {
-                'num_images': len(class_images),
-                'num_patients': len(class_patients),
-                'patients': list(class_patients)
+                'num_images': class_images_count,
+                'num_patients': len(class_patients_in_this_class_dir),
+                'patients': list(class_patients_in_this_class_dir)
             }
             
             total_images += len(class_images)
@@ -120,35 +116,26 @@ class HistopathDataProcessor:
             
             print(f"   {class_name}: {len(class_images)} images, {len(class_patients)} patients")
         
-        # Create label mapping - map class names to tissue class indices
-        self.label_mapping = self._create_label_mapping(list(class_stats.keys()))
+        # Create label mapping
+        self.label_mapping = {class_name: idx for idx, class_name in enumerate(sorted(class_stats.keys()))}
         
         dataset_info = {
             'total_images': total_images,
-            'total_patients': total_patients,
+            'total_patients': total_patients, # Use the count of unique patient IDs
             'num_classes': len(class_stats),
             'class_stats': class_stats,
             'label_mapping': self.label_mapping,
             'tissue_classes': self.tissue_classes
         }
-        
+
         print(f"✅ Dataset scan complete: {total_images} images, {total_patients} patients, {len(class_stats)} classes")
-        
+
         return dataset_info
-    
-    def _create_label_mapping(self, class_names: List[str]) -> Dict[str, int]:
-        """
-        Create mapping from class names to tissue class indices
-        You may need to customize this based on your dataset's class names
-        """
-        # Simple mapping - you should customize this based on your actual class names
-        # For now, we'll create a direct mapping
-        return {class_name: idx for idx, class_name in enumerate(sorted(class_names))}
     
     def _extract_patient_id(self, filename: str) -> str:
         """
         Extract patient ID from filename
-        
+
         This is a simple implementation - modify based on your naming convention
         Examples:
         - "patient123_patch001.jpg" -> "patient123"
@@ -157,35 +144,42 @@ class HistopathDataProcessor:
         """
         # Remove extension
         name_without_ext = Path(filename).stem
-        
+
         # Common patterns to extract patient ID
-        # Pattern 1: patient_id followed by underscore
+        # Assumes format like: {patient_id}_patch_{patch_number} or {patient_id}_slide_{slide_number}_patch_{patch_number}
+        # We want to capture the part before "_patch_" or "_slide_" if they exist, otherwise the whole stem.
+
+        # More specific extraction:
+        # Try to split by "_patch_" first, as it's a common delimiter for patches.
+        if "_patch_" in name_without_ext:
+            return name_without_ext.split("_patch_")[0]
+
+        # If not, try to split by "_slide_" (if slides are an intermediate step before patches)
+        if "_slide_" in name_without_ext:
+            return name_without_ext.split("_slide_")[0]
+
+        # If still underscores are present, assume the part before the last underscore is the patient_id
+        # e.g. patient_123_extra_info -> patient_123_extra
+        # This might need adjustment if patient IDs themselves contain many underscores and patch info doesn't use "_patch_"
         if '_' in name_without_ext:
-            parts = name_without_ext.split('_')
-            # Take first part as patient ID
-            return parts[0]
-        
-        # Pattern 2: If no underscore, use first part before any numbers at the end
-        import re
-        match = re.match(r'^([A-Za-z]+\d*)', name_without_ext)
-        if match:
-            return match.group(1)
-        
-        # Fallback: use entire filename without extension
+            return name_without_ext.rsplit('_', 1)[0]
+
+        # Fallback: if no common delimiters or underscores, use the whole name stem.
+        # This covers cases like "patient123.jpg"
         return name_without_ext
-    
-    def create_patient_based_splits(self, 
+
+    def create_patient_based_splits(self,
                                   train_ratio: float = None,
                                   val_ratio: float = None,
                                   test_ratio: float = None) -> Dict[str, List[str]]:
         """
         Create train/val/test splits based on patients to avoid data leakage
-        
+
         Args:
             train_ratio: Training split ratio
-            val_ratio: Validation split ratio  
+            val_ratio: Validation split ratio
             test_ratio: Test split ratio
-            
+
         Returns:
             Dictionary with patient IDs for each split
         """
@@ -195,237 +189,303 @@ class HistopathDataProcessor:
             val_ratio = self.config.val_split
         if test_ratio is None:
             test_ratio = self.config.test_split
-            
-        # Normalize ratios
-        total = train_ratio + val_ratio + test_ratio
-        train_ratio /= total
-        val_ratio /= total
-        test_ratio /= total
-        
+
+        # Normalize ratios if they don't sum to 1
+        current_total_ratio = train_ratio + val_ratio + test_ratio
+        if not (0.99 < current_total_ratio < 1.01): # Allow for small float inaccuracies
+            print(f"⚠️ Ratios do not sum to 1. Normalizing: train={train_ratio}, val={val_ratio}, test={test_ratio}")
+            train_ratio /= current_total_ratio
+            val_ratio /= current_total_ratio
+            test_ratio /= current_total_ratio
+
         # Group patients by class for stratified splitting
         patients_by_class = defaultdict(list)
+        # Ensure patient_data is populated from the most recent scan
+        if not self.patient_data:
+            raise ValueError("patient_data is empty. Run scan_dataset_directory first.")
+
         for patient_id, patches in self.patient_data.items():
-            # Use the class of the first patch (assuming all patches have same class)
+            if not patches: continue # Skip if patient has no patches listed
             patient_class = patches[0]['class']
             patients_by_class[patient_class].append(patient_id)
-        
-        # Split patients within each class
+
         splits = {'train': [], 'val': [], 'test': []}
-        
+
         for class_name, patients in patients_by_class.items():
-            # Shuffle patients
             random.shuffle(patients)
-            
-            n_patients = len(patients)
-            n_train = int(n_patients * train_ratio)
-            n_val = int(n_patients * val_ratio)
-            
-            # Split patients
+
+            n_patients_in_class = len(patients)
+
+            n_train = int(np.floor(n_patients_in_class * train_ratio))
+            n_val = int(np.floor(n_patients_in_class * val_ratio))
+            n_test = int(np.floor(n_patients_in_class * test_ratio))
+
+            # Distribute remainder (due to floor)
+            remainder = n_patients_in_class - (n_train + n_val + n_test)
+
+            # Prioritize splits that have a ratio > 0 but got 0 patients
+            if remainder > 0 and val_ratio > 0 and n_val == 0:
+                n_val += 1
+                remainder -= 1
+            if remainder > 0 and test_ratio > 0 and n_test == 0:
+                n_test += 1
+                remainder -= 1
+
+            # Distribute any further remainder, typically to train or largest specified split
+            if remainder > 0:
+                if train_ratio >= val_ratio and train_ratio >= test_ratio: # Train is largest or equal
+                    n_train += remainder
+                elif val_ratio >= test_ratio: # Val is largest or equal (and larger than train)
+                    n_val += remainder
+                else: # Test is largest
+                    n_test += remainder
+
+            # Correct potential over-assignment from remainder logic if a split had 0 ratio
+            if train_ratio == 0 and n_train > 0:
+                if val_ratio > 0:
+                    n_val += n_train
+                elif test_ratio > 0:
+                    n_test += n_train
+                else: # This case should ideally not happen if total ratio is 1
+                    if n_patients_in_class > 0:
+                        n_train = n_patients_in_class # assign all to train if others are 0
+                if train_ratio == 0:
+                    n_train = 0 # ensure it's zero if ratio is zero
+
+            if val_ratio == 0 and n_val > 0:
+                if train_ratio > 0:
+                    n_train += n_val
+                elif test_ratio > 0:
+                    n_test += n_val
+                else:
+                    if n_patients_in_class > 0:
+                        n_val = n_patients_in_class
+                if val_ratio == 0:
+                    n_val = 0
+
+            if test_ratio == 0 and n_test > 0:
+                if train_ratio > 0:
+                    n_train += n_test
+                elif val_ratio > 0:
+                    n_val += n_test
+                else:
+                    if n_patients_in_class > 0:
+                        n_test = n_patients_in_class
+                if test_ratio == 0:
+                    n_test = 0
+
+            # Ensure sum matches n_patients_in_class after adjustments
+            # This is a final guard. If logic above is perfect, this might not be strictly needed.
+            final_sum = n_train + n_val + n_test
+            if final_sum != n_patients_in_class:
+                # If sum is less, add deficit to the largest ratio split
+                if final_sum < n_patients_in_class:
+                    deficit = n_patients_in_class - final_sum
+                    if train_ratio >= val_ratio and train_ratio >= test_ratio:
+                        n_train += deficit
+                    elif val_ratio >= test_ratio:
+                        n_val += deficit
+                    else:
+                        n_test += deficit
+                # If sum is more, remove surplus from smallest non-zero ratio split that has items
+                elif final_sum > n_patients_in_class:
+                    surplus = final_sum - n_patients_in_class
+                    # Try removing from smallest positive ratio split first
+                    if test_ratio > 0 and n_test >= surplus:
+                        n_test -= surplus
+                    elif val_ratio > 0 and n_val >= surplus:
+                        n_val -= surplus
+                    elif train_ratio > 0 and n_train >= surplus:
+                        n_train -= surplus
+                    else: # fallback if all are zero ratio but have counts (should not happen)
+                        if n_test >= surplus:
+                            n_test -= surplus
+                        elif n_val >= surplus:
+                            n_val -= surplus
+                        else:
+                            n_train -= surplus
+
+
             train_patients = patients[:n_train]
-            val_patients = patients[n_train:n_train + n_val]
-            test_patients = patients[n_train + n_val:]
-            
+            val_patients = patients[n_train : n_train + n_val]
+            test_patients = patients[n_train + n_val : n_train + n_val + n_test]
+
+            # Ensure all patients are assigned if counts don't sum up, assign to the largest
+            if len(train_patients) + len(val_patients) + len(test_patients) < n_patients_in_class:
+                # This indicates an issue in count distribution
+                # As a fallback, assign remaining to train
+                remaining_start_idx = n_train + n_val + n_test
+                if train_ratio > 0: # only add to train if it's supposed to have data
+                    train_patients.extend(patients[remaining_start_idx:])
+                elif val_ratio > 0:
+                    val_patients.extend(patients[remaining_start_idx:])
+                elif test_ratio > 0:
+                    test_patients.extend(patients[remaining_start_idx:])
+                # If all ratios are 0, this is an edge case (e.g. 1 patient, ratios 0,0,0)
+                # The initial normalize ratios should prevent sum of ratios being 0 if total > 0
+
             splits['train'].extend(train_patients)
             splits['val'].extend(val_patients)
             splits['test'].extend(test_patients)
-            
+
             print(f"   {class_name}: {len(train_patients)} train, {len(val_patients)} val, {len(test_patients)} test patients")
-        
-        print(f"📊 Patient splits: {len(splits['train'])} train, {len(splits['val'])} val, {len(splits['test'])} test")
         
         return splits
     
-    def format_data_for_conversation(self, example: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Format data sample into conversational format for MedGemma
-        
-        Args:
-            example: Data sample with image_path, class, etc.
-            
-        Returns:
-            Formatted example with messages field
-        """
-        # Get the label index for this class
-        label_idx = self.label_mapping.get(example["class"], 0)
-        
-        # Create conversational format
-        example["messages"] = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                    },
-                    {
-                        "type": "text", 
-                        "text": CLASSIFICATION_PROMPT,
-                    },
-                ],
-            },
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": self.tissue_classes[label_idx] if label_idx < len(self.tissue_classes) else f"Class {example['class']}",
-                    },
-                ],
-            },
-        ]
-        
-        # Add label for training
-        example["label"] = label_idx
-        
-        return example
-
     def create_datasets(self, patient_splits: Dict[str, List[str]]) -> DatasetDict:
         """
-        Create HuggingFace datasets from patient splits with conversational format
+        Create HuggingFace datasets from patient splits
         
         Args:
             patient_splits: Dictionary with patient IDs for each split
-            
+
         Returns:
             DatasetDict with train/val/test splits
         """
         datasets = {}
-        
+
         for split_name, patient_ids in patient_splits.items():
-            if not patient_ids:
+            if not patient_ids:  # Skip empty splits
                 continue
                 
-            # Collect all samples for this split
-            split_samples = []
+            split_data = []
             
             for patient_id in patient_ids:
+                if patient_id not in self.patient_data:
+                    print(f"⚠️ Patient ID {patient_id} from splits not found in self.patient_data. Skipping.")
+                    continue
                 patient_patches = self.patient_data[patient_id]
-                
+
                 # Limit patches per patient if specified
                 if len(patient_patches) > self.config.max_patches_per_patient:
                     patient_patches = random.sample(patient_patches, self.config.max_patches_per_patient)
-                
-                # Skip patients with too few patches
-                if len(patient_patches) < self.config.min_patches_per_patient:
+                elif len(patient_patches) < self.config.min_patches_per_patient:
+                    # Skip patients with insufficient patches
                     continue
                 
-                # Add each patch as a sample
                 for patch_info in patient_patches:
                     # Load image
                     try:
                         image = Image.open(patch_info['image_path']).convert("RGB")
                         
-                        sample = {
-                            'image': image,
-                            'image_path': patch_info['image_path'],
-                            'patient_id': patient_id,
-                            'class': patch_info['class']
-                        }
+                        # Create conversation format for instruction tuning
+                        conversation = [
+                            {
+                                "role": "user",
+                                "content": "Classify the histopathology subtype in this image:"
+                            },
+                            {
+                                "role": "assistant",
+                                "content": patch_info['class']
+                            }
+                        ]
                         
-                        # Format for conversation
-                        sample = self.format_data_for_conversation(sample)
-                        split_samples.append(sample)
+                        split_data.append({
+                            "image": image,
+                            "messages": conversation,
+                            "subtype": patch_info['class'],
+                            "patient_id": patient_id,
+                            "image_path": patch_info['image_path'],
+                            "label": self.label_mapping[patch_info['class']]
+                        })
                         
                     except Exception as e:
-                        print(f"⚠️ Error loading image {patch_info['image_path']}: {e}")
+                        print(f"⚠️ Skipping corrupted image {patch_info['image_path']}: {e}")
                         continue
             
-            # Limit dataset size if specified (like in official notebook)
-            if split_name == 'train' and hasattr(self.config, 'train_size') and self.config.train_size > 0:
-                if len(split_samples) > self.config.train_size:
-                    split_samples = random.sample(split_samples, self.config.train_size)
-            elif split_name == 'val' and hasattr(self.config, 'validation_size') and self.config.validation_size > 0:
-                if len(split_samples) > self.config.validation_size:
-                    split_samples = random.sample(split_samples, self.config.validation_size)
-            
-            # Create dataset
-            if split_samples:
-                datasets[split_name] = Dataset.from_list(split_samples)
-                print(f"✅ Created {split_name} dataset: {len(split_samples)} samples")
-            else:
-                print(f"⚠️ No samples found for {split_name} split")
+            if split_data:
+                datasets[split_name] = Dataset.from_list(split_data)
+                print(f"📊 {split_name}: {len(split_data)} samples from {len(patient_ids)} patients")
         
         return DatasetDict(datasets)
-
+    
     def process_dataset(self, data_path: str) -> Tuple[DatasetDict, Dict[str, Any]]:
         """
         Complete dataset processing pipeline
         
         Args:
-            data_path: Path to dataset directory
+            data_path: Root directory containing class folders
             
         Returns:
             Tuple of (DatasetDict, dataset_info)
         """
         print("🔄 Starting dataset processing...")
         
-        # Scan directory structure
+        # Step 1: Scan directory
         dataset_info = self.scan_dataset_directory(data_path)
         
-        # Create patient-based splits
+        # Step 2: Create patient-based splits
         patient_splits = self.create_patient_based_splits()
         
-        # Create datasets
+        # Step 3: Create datasets
         datasets = self.create_datasets(patient_splits)
         
         # Add split info to dataset_info
-        dataset_info['patient_splits'] = patient_splits
-        dataset_info['dataset_sizes'] = {split: len(ds) for split, ds in datasets.items()}
+        dataset_info['splits'] = {
+            split_name: len(patient_ids) for split_name, patient_ids in patient_splits.items()
+        }
+        dataset_info['dataset_splits'] = {
+            split_name: len(dataset) for split_name, dataset in datasets.items()
+        }
         
-        print("✅ Dataset processing completed!")
-        print(f"📊 Final dataset sizes: {dataset_info['dataset_sizes']}")
+        print("✅ Dataset processing complete!")
+        print(f"📈 Final dataset sizes: {dataset_info['dataset_splits']}")
         
         return datasets, dataset_info
 
     def save_dataset_info(self, dataset_info: Dict[str, Any], output_path: str):
         """Save dataset information to JSON file"""
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Convert sets to lists for JSON serialization
-        serializable_info = json.loads(json.dumps(dataset_info, default=str))
-        
         with open(output_path, 'w') as f:
+            # Convert any non-serializable objects
+            serializable_info = {}
+            for key, value in dataset_info.items():
+                if isinstance(value, (dict, list, str, int, float, bool)) or value is None:
+                    serializable_info[key] = value
+                else:
+                    serializable_info[key] = str(value)
+            
             json.dump(serializable_info, f, indent=2)
         
         print(f"💾 Dataset info saved to {output_path}")
 
-
 def create_example_dataset_structure(base_path: str):
     """
     Create an example dataset structure for testing
-    This creates dummy directories - you should replace with your actual data
+    This is just for demonstration - replace with your actual data
     """
     base_path = Path(base_path)
+    base_path.mkdir(exist_ok=True)
     
-    # Example tissue types (customize based on your data)
-    tissue_types = [
-        "adipose",
-        "background", 
-        "debris",
-        "lymphocytes",
-        "mucus",
-        "smooth_muscle",
-        "normal_colon_mucosa",
-        "cancer_associated_stroma",
-        "colorectal_adenocarcinoma_epithelium"
-    ]
+    # Create class directories
+    classes = ['adenocarcinoma', 'squamous_cell', 'normal', 'inflammatory']
     
-    for tissue_type in tissue_types:
-        tissue_dir = base_path / tissue_type
-        tissue_dir.mkdir(parents=True, exist_ok=True)
-        print(f"📁 Created directory: {tissue_dir}")
+    for class_name in classes:
+        class_dir = base_path / class_name
+        class_dir.mkdir(exist_ok=True)
+        
+        # Create some dummy patient files (you would place your actual images here)
+        for patient_id in range(1, 6):  # 5 patients per class
+            for patch_id in range(1, 4):  # 3 patches per patient
+                filename = f"patient_{patient_id:03d}_patch_{patch_id:02d}.jpg"
+                dummy_file = class_dir / filename
+                if not dummy_file.exists():
+                    dummy_file.touch()
     
-    print(f"✅ Example dataset structure created at {base_path}")
-    print("📝 Please place your histopathology images in the appropriate tissue type folders")
-    print("📝 Image naming convention: patientID_patchID.extension (e.g., P001_001.jpg)")
-
+    print(f"📁 Example dataset structure created at: {base_path}")
+    print("Replace dummy files with your actual histopathology images")
 
 if __name__ == "__main__":
-    # Example usage
     from config import DataConfig
     
-    config = DataConfig(data_path="./example_dataset")
-    processor = HistopathDataProcessor(config)
+    # Create example dataset structure
+    create_example_dataset_structure("./example_histopath_data")
     
-    # Create example structure
-    create_example_dataset_structure("./example_dataset")
+    # Initialize processor
+    data_config = DataConfig(data_path="./example_histopath_data")
+    processor = HistopathDataProcessor(data_config)
+    
+    # Process dataset
+    datasets, info = processor.process_dataset(data_config.data_path)
+    
+    # Save dataset info
+    processor.save_dataset_info(info, "./dataset_info.json")

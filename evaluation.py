@@ -74,33 +74,29 @@ class MedGemmaEvaluator:
     
     def predict_single_image(self, 
                            image_path: str, 
-                           max_new_tokens: int = 20) -> str:
+                           temperature: float = 0.1,
+                           max_new_tokens: int = 50) -> str:
         """
         Predict tissue type for a single image using pipeline
         
         Args:
             image_path: Path to the histopathology image
+            temperature: Sampling temperature
             max_new_tokens: Maximum tokens to generate
             
         Returns:
             Predicted tissue type as string
         """
-        # Load image
-        if isinstance(image_path, str):
-            image = Image.open(image_path).convert("RGB")
-        else:
-            image = image_path.convert("RGB")
+        # Load and process image
+        image = Image.open(image_path).convert("RGB")
+        input_text = "Classify the histopathology subtype in this image:"
         
-        # Create message format
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": f"What is the most likely tissue type shown in the histopathology image?\n{chr(10).join(self.tissue_classes)}"}
-                ]
-            }
-        ]
+        # Prepare inputs
+        inputs = self.processor(
+            text=input_text,
+            images=image,
+            return_tensors="pt"
+        ).to(self.model.device)
         
         # Generate prediction
         outputs = self.pipe(
@@ -199,17 +195,37 @@ class MedGemmaEvaluator:
         predictions = []
         prediction_details = []
         
-        for i, output in enumerate(outputs):
-            pred_text = output["generated_text"]
-            pred_idx = self.postprocess_prediction(pred_text, do_full_match)
+        # Process in batches
+        for i in range(0, len(dataset), batch_size):
+            batch_end = min(i + batch_size, len(dataset))
+            batch = dataset[i:batch_end]
             
-            predictions.append(pred_idx)
-            prediction_details.append({
-                "ground_truth": ground_truth[i],
-                "prediction_text": pred_text,
-                "prediction_idx": pred_idx,
-                "correct": pred_idx == ground_truth[i]
-            })
+            # Process each sample in batch
+            for j, sample in enumerate(batch):
+                if (i + j) % 50 == 0:
+                    print(f"   Progress: {i + j}/{len(dataset)}")
+                
+                try:
+                    # Get prediction
+                    pred = self.predict_single_image(
+                        sample["image_path"] if "image_path" in sample else sample["image"],
+                        temperature=temperature
+                    )
+                    
+                    predictions.append(pred)
+                    ground_truth.append(sample["subtype"])
+                    
+                    prediction_details.append({
+                        "image_path": sample.get("image_path", ""),
+                        "patient_id": sample.get("patient_id", ""),
+                        "ground_truth": sample["subtype"],
+                        "prediction": pred,
+                        "correct": self._is_prediction_correct(pred, sample["subtype"])
+                    })
+                    
+                except Exception as e:
+                    print(f"⚠️ Error processing sample {i + j}: {e}")
+                    continue
         
         # Calculate metrics
         metrics = self.compute_metrics(predictions, ground_truth)
@@ -283,11 +299,16 @@ class MedGemmaEvaluator:
         patient_predictions = defaultdict(list)
         patient_ground_truth = {}
         
-        for i, detail in enumerate(patch_results["prediction_details"]):
-            if "patient_id" in dataset[i]:
-                patient_id = dataset[i]["patient_id"]
-                patient_predictions[patient_id].append(detail["prediction_idx"])
-                patient_ground_truth[patient_id] = detail["ground_truth"]
+        for sample in dataset:
+            patient_id = sample.get("patient_id", "unknown")
+            
+            # Get prediction for this patch
+            pred = self.predict_single_image(
+                sample["image_path"] if "image_path" in sample else sample["image"]
+            )
+            
+            patient_predictions[patient_id].append(pred)
+            patient_ground_truth[patient_id] = sample["subtype"]  # Assuming same for all patches
         
         # Aggregate predictions per patient
         aggregated_predictions = []
