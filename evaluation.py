@@ -3,6 +3,7 @@ Evaluation utilities for fine-tuned MedGemma model on histopathology data
 Based on official Google Health MedGemma implementation
 """
 
+# type: ignore
 import json
 import torch
 import numpy as np
@@ -11,8 +12,8 @@ from typing import Dict, List, Tuple, Any
 from collections import defaultdict
 
 from PIL import Image
-from transformers import pipeline, AutoProcessor, AutoModelForImageTextToText
-import evaluate
+from transformers import pipeline, AutoProcessor, AutoModelForImageTextToText  # type: ignore
+import evaluate  # type: ignore
 from sklearn.metrics import (
     accuracy_score, 
     f1_score, 
@@ -100,7 +101,7 @@ class MedGemmaEvaluator:
         
         # Generate prediction
         outputs = self.pipe(
-            text=messages,
+            text=input_text,
             images=image,
             max_new_tokens=max_new_tokens,
             return_full_text=False,
@@ -145,7 +146,8 @@ class MedGemmaEvaluator:
                         dataset, 
                         batch_size: int = 64,
                         max_new_tokens: int = 20,
-                        do_full_match: bool = True) -> Dict[str, Any]:
+                        do_full_match: bool = True,
+                        temperature: float = 0.1) -> Dict[str, Any]:
         """
         Evaluate model on a dataset using batch inference
         
@@ -154,6 +156,7 @@ class MedGemmaEvaluator:
             batch_size: Batch size for evaluation
             max_new_tokens: Maximum tokens to generate
             do_full_match: Whether to use exact matching
+            temperature: Sampling temperature for predictions
             
         Returns:
             Dictionary containing evaluation metrics
