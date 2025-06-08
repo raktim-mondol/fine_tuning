@@ -1,5 +1,6 @@
 """
 Configuration file for MedGemma histopathology fine-tuning
+Based on official Google Health MedGemma implementation
 """
 
 import yaml
@@ -10,11 +11,20 @@ from pathlib import Path
 @dataclass
 class ModelConfig:
     """Model configuration parameters"""
-    model_id: str = "google/medgemma-4b-pt"
+    model_id: str = "google/medgemma-4b-it"  # Updated to instruction-tuned version
     torch_dtype: str = "bfloat16"
     attn_implementation: str = "eager"
     device_map: str = "auto"
     trust_remote_code: bool = True
+
+@dataclass
+class QuantizationConfig:
+    """Quantization configuration for 4-bit training"""
+    load_in_4bit: bool = True
+    bnb_4bit_use_double_quant: bool = True
+    bnb_4bit_quant_type: str = "nf4"
+    bnb_4bit_compute_dtype: str = "bfloat16"
+    bnb_4bit_quant_storage: str = "bfloat16"
 
 @dataclass
 class LoRAConfig:
@@ -25,32 +35,45 @@ class LoRAConfig:
     target_modules: str = "all-linear"
     bias: str = "none"
     task_type: str = "CAUSAL_LM"
+    modules_to_save: List[str] = None
+    
+    def __post_init__(self):
+        if self.modules_to_save is None:
+            self.modules_to_save = ["lm_head", "embed_tokens"]
 
 @dataclass
 class TrainingConfig:
-    """Training configuration parameters"""
-    output_dir: str = "./medgemma-histpath-finetuned"
-    num_epochs: int = 3
+    """Training configuration parameters using SFTConfig"""
+    output_dir: str = "medgemma-4b-it-sft-lora-histopath"
+    num_train_epochs: int = 1
     per_device_train_batch_size: int = 4
     per_device_eval_batch_size: int = 4
-    gradient_accumulation_steps: int = 2
-    learning_rate: float = 2e-4
-    weight_decay: float = 0.01
-    max_grad_norm: float = 1.0
-    lr_scheduler_type: str = "cosine"
-    warmup_ratio: float = 0.1
-    bf16: bool = True
-    dataloader_num_workers: int = 4
-    max_seq_length: int = 512
+    gradient_accumulation_steps: int = 4
+    gradient_checkpointing: bool = True
+    optim: str = "adamw_torch_fused"
+    logging_steps: int = 50
     save_strategy: str = "epoch"
-    evaluation_strategy: str = "epoch"
-    logging_steps: int = 10
-    save_total_limit: int = 3
-    load_best_model_at_end: bool = True
-    metric_for_best_model: str = "eval_loss"
-    greater_is_better: bool = False
-    early_stopping_patience: int = 2
-    early_stopping_threshold: float = 0.01
+    eval_strategy: str = "steps"
+    eval_steps: int = 50
+    learning_rate: float = 2e-4
+    bf16: bool = True
+    max_grad_norm: float = 0.3
+    warmup_ratio: float = 0.03
+    lr_scheduler_type: str = "linear"
+    push_to_hub: bool = True
+    report_to: str = "tensorboard"
+    gradient_checkpointing_kwargs: Dict = None
+    dataset_kwargs: Dict = None
+    remove_unused_columns: bool = False
+    label_names: List[str] = None
+    
+    def __post_init__(self):
+        if self.gradient_checkpointing_kwargs is None:
+            self.gradient_checkpointing_kwargs = {"use_reentrant": False}
+        if self.dataset_kwargs is None:
+            self.dataset_kwargs = {"skip_prepare_dataset": True}
+        if self.label_names is None:
+            self.label_names = ["labels"]
 
 @dataclass
 class DataConfig:
@@ -62,6 +85,8 @@ class DataConfig:
     image_extensions: List[str] = None
     max_patches_per_patient: int = 10  # Limit patches per patient for memory
     min_patches_per_patient: int = 1   # Minimum patches required
+    train_size: int = 9000  # Number of training samples (like official notebook)
+    validation_size: int = 1000  # Number of validation samples
     
     def __post_init__(self):
         if self.image_extensions is None:
@@ -71,6 +96,7 @@ class DataConfig:
 class Config:
     """Main configuration class"""
     model: ModelConfig
+    quantization: QuantizationConfig
     lora: LoRAConfig
     training: TrainingConfig
     data: DataConfig
@@ -85,6 +111,7 @@ class Config:
         
         return cls(
             model=ModelConfig(**config_dict.get('model', {})),
+            quantization=QuantizationConfig(**config_dict.get('quantization', {})),
             lora=LoRAConfig(**config_dict.get('lora', {})),
             training=TrainingConfig(**config_dict.get('training', {})),
             data=DataConfig(**config_dict.get('data', {})),
@@ -96,6 +123,7 @@ class Config:
         """Save configuration to YAML file"""
         config_dict = {
             'model': self.model.__dict__,
+            'quantization': self.quantization.__dict__,
             'lora': self.lora.__dict__,
             'training': self.training.__dict__,
             'data': self.data.__dict__,
@@ -111,6 +139,7 @@ def get_default_config() -> Config:
     """Get default configuration for histopathology fine-tuning"""
     return Config(
         model=ModelConfig(),
+        quantization=QuantizationConfig(),
         lora=LoRAConfig(),
         training=TrainingConfig(),
         data=DataConfig()

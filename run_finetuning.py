@@ -1,231 +1,279 @@
 #!/usr/bin/env python3
 """
-Main script to run MedGemma fine-tuning for histopathology classification
+Main script to run MedGemma fine-tuning pipeline
+Based on official Google Health MedGemma implementation
 """
 
-import argparse
-import sys
 import os
+import sys
+import argparse
 from pathlib import Path
 
-# Add current directory to path to import local modules
+# Add current directory to path for imports
 sys.path.append(str(Path(__file__).parent))
 
 from config import Config
 from medgemma_trainer import MedGemmaFineTuner
-from evaluation import MedGemmaEvaluator
 
 
-def setup_args():
-    """Setup command line arguments"""
+def validate_config(config: Config) -> bool:
+    """
+    Validate configuration before starting training
+    
+    Args:
+        config: Configuration object
+        
+    Returns:
+        True if valid, False otherwise
+    """
+    errors = []
+    
+    # Check data path
+    if not config.data.data_path:
+        errors.append("❌ data.data_path is required")
+    elif not Path(config.data.data_path).exists():
+        errors.append(f"❌ Data path does not exist: {config.data.data_path}")
+    
+    # Check HuggingFace token
+    if not config.hf_token and not os.getenv("HF_TOKEN"):
+        errors.append("⚠️ No HuggingFace token provided. Set hf_token in config or HF_TOKEN environment variable")
+    
+    # Check output directory
+    output_dir = Path(config.training.output_dir)
+    if output_dir.exists() and any(output_dir.iterdir()):
+        print(f"⚠️ Output directory {output_dir} already exists and is not empty")
+        print("   Training will continue from existing checkpoint if available")
+    
+    # Check GPU requirements
+    import torch
+    if not torch.cuda.is_available():
+        errors.append("❌ CUDA is not available. GPU is required for training")
+    else:
+        device_capability = torch.cuda.get_device_capability()
+        if device_capability[0] < 8:
+            errors.append("❌ GPU does not support bfloat16. Compute capability 8.0+ required")
+    
+    # Print errors
+    if errors:
+        print("Configuration validation failed:")
+        for error in errors:
+            print(f"  {error}")
+        return False
+    
+    return True
+
+
+def print_config_summary(config: Config):
+    """Print a summary of the configuration"""
+    print("\n" + "="*60)
+    print("MEDGEMMA FINE-TUNING CONFIGURATION")
+    print("="*60)
+    
+    print(f"Model:")
+    print(f"  ID: {config.model.model_id}")
+    print(f"  Precision: {config.model.torch_dtype}")
+    print(f"  Quantization: 4-bit ({'enabled' if config.quantization.load_in_4bit else 'disabled'})")
+    
+    print(f"\nLoRA:")
+    print(f"  Rank: {config.lora.r}")
+    print(f"  Alpha: {config.lora.lora_alpha}")
+    print(f"  Dropout: {config.lora.lora_dropout}")
+    print(f"  Target modules: {config.lora.target_modules}")
+    
+    print(f"\nTraining:")
+    print(f"  Output directory: {config.training.output_dir}")
+    print(f"  Epochs: {config.training.num_train_epochs}")
+    print(f"  Batch size: {config.training.per_device_train_batch_size}")
+    print(f"  Learning rate: {config.training.learning_rate}")
+    print(f"  Gradient accumulation: {config.training.gradient_accumulation_steps}")
+    
+    print(f"\nData:")
+    print(f"  Path: {config.data.data_path}")
+    print(f"  Train size: {config.data.train_size}")
+    print(f"  Validation size: {config.data.validation_size}")
+    print(f"  Splits: {config.data.train_split:.1f}/{config.data.val_split:.1f}/{config.data.test_split:.1f}")
+    
+    print("="*60 + "\n")
+
+
+def main():
+    """Main function"""
     parser = argparse.ArgumentParser(
-        description="Fine-tune MedGemma for histopathology classification"
+        description="Fine-tune MedGemma for histopathology classification",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Basic usage with config file
+  python run_finetuning.py --config config.yaml
+  
+  # Override data path
+  python run_finetuning.py --config config.yaml --data_path /path/to/data
+  
+  # Override output directory
+  python run_finetuning.py --config config.yaml --output_dir ./my_model
+  
+  # Set HuggingFace token
+  python run_finetuning.py --config config.yaml --hf_token your_token_here
+  
+  # Quick test run with fewer epochs
+  python run_finetuning.py --config config.yaml --epochs 1
+        """
     )
     
     parser.add_argument(
-        "--config", 
-        type=str, 
+        "--config",
+        type=str,
         default="config.yaml",
-        help="Path to configuration file"
+        help="Path to configuration YAML file (default: config.yaml)"
     )
     
     parser.add_argument(
         "--data_path",
         type=str,
-        required=True,
-        help="Path to histopathology dataset directory"
-    )
-    
-    parser.add_argument(
-        "--hf_token",
-        type=str,
-        required=True,
-        help="HuggingFace API token for model access"
+        help="Override data path from config"
     )
     
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./medgemma-histpath-finetuned",
-        help="Output directory for fine-tuned model"
+        help="Override output directory from config"
     )
     
     parser.add_argument(
-        "--mode",
+        "--hf_token",
         type=str,
-        choices=["train", "evaluate", "both"],
-        default="both",
-        help="Mode: train, evaluate, or both"
+        help="HuggingFace token (can also use HF_TOKEN environment variable)"
     )
     
     parser.add_argument(
-        "--model_dir",
-        type=str,
-        help="Directory containing fine-tuned model (for evaluation mode)"
+        "--epochs",
+        type=int,
+        help="Override number of training epochs"
     )
     
     parser.add_argument(
-        "--eval_output_dir",
-        type=str,
-        default="./evaluation_results",
-        help="Directory to save evaluation results"
+        "--batch_size",
+        type=int,
+        help="Override training batch size"
     )
     
-    # Training parameters (can override config)
-    parser.add_argument("--epochs", type=int, help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, help="Training batch size")
-    parser.add_argument("--learning_rate", type=float, help="Learning rate")
-    parser.add_argument("--lora_r", type=int, help="LoRA rank")
+    parser.add_argument(
+        "--learning_rate",
+        type=float,
+        help="Override learning rate"
+    )
     
-    return parser.parse_args()
-
-
-def load_and_update_config(args):
-    """Load configuration and update with command line arguments"""
-    # Load base config
-    if Path(args.config).exists():
-        config = Config.from_yaml(args.config)
-        print(f"✅ Loaded configuration from {args.config}")
-    else:
-        print(f"⚠️ Config file {args.config} not found, using default configuration")
-        from config import get_default_config
-        config = get_default_config()
+    parser.add_argument(
+        "--validate_only",
+        action="store_true",
+        help="Only validate configuration without training"
+    )
     
-    # Update with command line arguments
-    config.data.data_path = args.data_path
-    config.hf_token = args.hf_token
-    config.training.output_dir = args.output_dir
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume training from checkpoint if available"
+    )
     
-    # Override training parameters if provided
+    args = parser.parse_args()
+    
+    # Load configuration
+    config_path = Path(args.config)
+    if not config_path.exists():
+        print(f"❌ Configuration file not found: {config_path}")
+        print("💡 Create a config.yaml file or specify --config path")
+        return 1
+    
+    try:
+        config = Config.from_yaml(str(config_path))
+        print(f"✅ Loaded configuration from {config_path}")
+    except Exception as e:
+        print(f"❌ Error loading configuration: {e}")
+        return 1
+    
+    # Apply command line overrides
+    if args.data_path:
+        config.data.data_path = args.data_path
+        print(f"🔄 Override data_path: {args.data_path}")
+    
+    if args.output_dir:
+        config.training.output_dir = args.output_dir
+        print(f"🔄 Override output_dir: {args.output_dir}")
+    
+    if args.hf_token:
+        config.hf_token = args.hf_token
+        print(f"🔄 Override HuggingFace token")
+    elif os.getenv("HF_TOKEN"):
+        config.hf_token = os.getenv("HF_TOKEN")
+        print(f"🔄 Using HF_TOKEN from environment")
+    
     if args.epochs:
-        config.training.num_epochs = args.epochs
+        config.training.num_train_epochs = args.epochs
+        print(f"🔄 Override epochs: {args.epochs}")
+    
     if args.batch_size:
         config.training.per_device_train_batch_size = args.batch_size
         config.training.per_device_eval_batch_size = args.batch_size
+        print(f"🔄 Override batch_size: {args.batch_size}")
+    
     if args.learning_rate:
         config.training.learning_rate = args.learning_rate
-    if args.lora_r:
-        config.lora.r = args.lora_r
+        print(f"🔄 Override learning_rate: {args.learning_rate}")
     
-    return config
-
-
-def validate_data_path(data_path: str):
-    """Validate that the data path exists and has the expected structure"""
-    data_path = Path(data_path)
+    # Print configuration summary
+    print_config_summary(config)
     
-    if not data_path.exists():
-        raise FileNotFoundError(f"Data path does not exist: {data_path}")
+    # Validate configuration
+    if not validate_config(config):
+        return 1
     
-    if not data_path.is_dir():
-        raise NotADirectoryError(f"Data path is not a directory: {data_path}")
+    if args.validate_only:
+        print("✅ Configuration validation passed")
+        return 0
     
-    # Check for class directories
-    class_dirs = [d for d in data_path.iterdir() if d.is_dir()]
-    if len(class_dirs) == 0:
-        raise ValueError(f"No class directories found in: {data_path}")
+    # Create output directory
+    output_dir = Path(config.training.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     
-    print(f"✅ Data validation passed: {len(class_dirs)} class directories found")
-    for class_dir in class_dirs:
-        image_files = [f for f in class_dir.iterdir() 
-                      if f.suffix.lower() in ['.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp']]
-        print(f"   {class_dir.name}: {len(image_files)} images")
-
-
-def train_model(config: Config):
-    """Train the MedGemma model"""
-    print("🚀 Starting training...")
+    # Save the final configuration
+    config_save_path = output_dir / "config.yaml"
+    config.to_yaml(str(config_save_path))
+    print(f"💾 Configuration saved to {config_save_path}")
     
-    # Initialize fine-tuner
-    fine_tuner = MedGemmaFineTuner(config)
-    
-    # Run complete training pipeline
-    trainer = fine_tuner.run_complete_pipeline()
-    
-    print("✅ Training completed successfully!")
-    return trainer
-
-
-def evaluate_model(model_dir: str, 
-                  data_path: str, 
-                  eval_output_dir: str,
-                  config: Config):
-    """Evaluate the fine-tuned model"""
-    print("📊 Starting evaluation...")
-    
-    # Initialize evaluator
-    evaluator = MedGemmaEvaluator(model_dir)
-    
-    # Prepare test dataset
-    from data_utils import HistopathDataProcessor
-    data_processor = HistopathDataProcessor(config.data)
-    datasets, _ = data_processor.process_dataset(data_path)
-    
-    if "test" not in datasets:
-        print("⚠️ No test split found, using validation split for evaluation")
-        test_dataset = datasets.get("validation", datasets.get("val"))
-    else:
-        test_dataset = datasets["test"]
-    
-    if test_dataset is None:
-        raise ValueError("No test or validation dataset available for evaluation")
-    
-    # Generate evaluation report
-    results = evaluator.generate_evaluation_report(test_dataset, eval_output_dir)
-    
-    print("✅ Evaluation completed successfully!")
-    return results
-
-
-def main():
-    """Main function"""
-    print("🏥 MedGemma Histopathology Fine-tuning Pipeline")
-    print("=" * 50)
-    
-    # Parse arguments
-    args = setup_args()
-    
-    # Load and validate configuration
-    config = load_and_update_config(args)
-    
-    # Validate data path
-    validate_data_path(args.data_path)
-    
-    # Run based on mode
-    if args.mode in ["train", "both"]:
-        # Training
-        trainer = train_model(config)
+    try:
+        # Initialize fine-tuner
+        print("🚀 Initializing MedGemma fine-tuner...")
+        fine_tuner = MedGemmaFineTuner(config)
         
-        # Save final config
-        config.to_yaml(str(Path(config.training.output_dir) / "final_config.yaml"))
+        # Run training
+        print("🎯 Starting fine-tuning pipeline...")
+        trainer = fine_tuner.run_complete_pipeline()
         
-        if args.mode == "train":
-            print("🎉 Training pipeline completed!")
-            return
-    
-    if args.mode in ["evaluate", "both"]:
-        # Evaluation
-        model_dir = args.model_dir if args.model_dir else config.training.output_dir
+        print("\n🎉 Fine-tuning completed successfully!")
+        print(f"📁 Model saved to: {config.training.output_dir}")
+        print(f"📊 You can now use the model for inference or evaluation")
         
-        if not Path(model_dir).exists():
-            raise FileNotFoundError(f"Model directory not found: {model_dir}")
+        # Print next steps
+        print("\n📋 Next Steps:")
+        print(f"  1. Evaluate the model:")
+        print(f"     python -c \"from evaluation import MedGemmaEvaluator; evaluator = MedGemmaEvaluator('{config.training.output_dir}'); evaluator.generate_evaluation_report(test_dataset)\"")
+        print(f"  2. Run inference:")
+        print(f"     python inference.py --model_path {config.training.output_dir} --image_path your_image.jpg")
+        print(f"  3. Check training logs:")
+        print(f"     tensorboard --logdir {config.training.output_dir}/logs")
         
-        results = evaluate_model(
-            model_dir=model_dir,
-            data_path=args.data_path,
-            eval_output_dir=args.eval_output_dir,
-            config=config
-        )
-    
-    print("🎉 Complete pipeline finished successfully!")
+        return 0
+        
+    except KeyboardInterrupt:
+        print("\n⚠️ Training interrupted by user")
+        return 1
+    except Exception as e:
+        print(f"\n❌ Training failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return 1
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n⚠️ Process interrupted by user")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n❌ Error: {str(e)}")
-        sys.exit(1)
+    exit_code = main()
+    sys.exit(exit_code)

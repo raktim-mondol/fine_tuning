@@ -1,293 +1,322 @@
 # MedGemma Fine-tuning for Histopathology Classification
 
-This repository contains a complete, reproducible pipeline for fine-tuning Google's MedGemma-4B-PT model on histopathology data using LoRA (Low-Rank Adaptation). The implementation is specifically designed to handle multiple patches per patient scenarios common in histopathology datasets.
+This repository provides a complete implementation for fine-tuning Google's MedGemma-4B-IT model on histopathology images, based on the **official Google Health MedGemma implementation**. The codebase supports tissue classification tasks using LoRA (Low-Rank Adaptation) with 4-bit quantization for efficient training.
 
-## 🎯 Features
+## 🔥 Key Features
 
-- **Patient-based data splitting** to prevent data leakage
-- **Multiple patches per patient** handling with configurable limits
-- **LoRA fine-tuning** for memory-efficient training
-- **Comprehensive evaluation** at both patch and patient levels
-- **Reproducible configuration** system with YAML files
-- **Automatic mixed precision** training support
-- **Early stopping** and checkpoint management
-- **Detailed logging** and visualization
+- **Official Implementation**: Based on Google Health's official MedGemma fine-tuning notebook
+- **4-bit Quantization**: Memory-efficient training using QLoRA
+- **Conversational Format**: Uses proper message format for instruction-tuned models
+- **Patient-level Splitting**: Prevents data leakage in medical datasets
+- **Comprehensive Evaluation**: Includes baseline comparison and detailed metrics
+- **Production Ready**: Complete pipeline from training to inference
 
-## 📁 Project Structure
+## 📋 Requirements
 
-```
-fine_tuning/
-├── config.py              # Configuration classes and utilities
-├── config.yaml            # Main configuration file
-├── data_utils.py           # Data preprocessing and loading
-├── medgemma_trainer.py     # Main training pipeline
-├── evaluation.py           # Evaluation utilities
-├── run_finetuning.py       # Main execution script
-├── requirements.txt        # Python dependencies
-└── README.md              # This file
-```
+### Hardware Requirements
+- **GPU**: NVIDIA GPU with compute capability 8.0+ (A100, RTX 3090, RTX 4090, etc.)
+- **Memory**: At least 40GB GPU memory recommended
+- **Storage**: Sufficient space for dataset and model checkpoints
+
+### Software Requirements
+- Python 3.8+
+- CUDA 11.8+ or 12.0+
+- PyTorch 2.0+
 
 ## 🚀 Quick Start
 
 ### 1. Installation
 
 ```bash
-# Clone or download the repository
-cd fine_tuning
+# Clone the repository
+git clone <repository-url>
+cd medgemma_fine_tuning
 
 # Install dependencies
 pip install -r requirements.txt
+
+# Verify installation
+python test_installation.py
 ```
 
-### 2. Data Preparation
+### 2. Setup HuggingFace Access
 
-Organize your histopathology data in the following structure:
+1. Create a HuggingFace account at [huggingface.co](https://huggingface.co)
+2. Request access to MedGemma at [google/medgemma-4b-it](https://huggingface.co/google/medgemma-4b-it)
+3. Generate a write access token at [HuggingFace Settings](https://huggingface.co/settings/tokens)
+4. Set your token in `config.yaml` or as environment variable:
+
+```bash
+export HF_TOKEN="your_huggingface_token_here"
+```
+
+### 3. Prepare Your Dataset
+
+Organize your histopathology images in the following structure:
 
 ```
 your_dataset/
-├── class1/
+├── adipose/
 │   ├── patient001_patch001.jpg
 │   ├── patient001_patch002.jpg
+│   └── ...
+├── background/
 │   ├── patient002_patch001.jpg
 │   └── ...
-├── class2/
-│   ├── patient003_patch001.jpg
-│   ├── patient003_patch002.jpg
-│   └── ...
-└── class3/
-    └── ...
+├── debris/
+├── lymphocytes/
+├── mucus/
+├── smooth_muscle/
+├── normal_colon_mucosa/
+├── cancer_associated_stroma/
+└── colorectal_adenocarcinoma_epithelium/
 ```
 
-**Important**: The code extracts patient IDs from filenames automatically. The default pattern assumes `patientID_patchID.extension` format. Modify the `_extract_patient_id()` function in `data_utils.py` if your naming convention is different.
+**Important**: Use patient-based naming (e.g., `patientID_patchID.extension`) to enable proper data splitting.
 
-### 3. Configuration
+### 4. Configure Training
 
-Edit `config.yaml` to match your setup:
+Edit `config.yaml` to set your dataset path:
 
 ```yaml
-# Update these required fields:
 data:
-  data_path: "/path/to/your/histopath/dataset"  # Your dataset path
+  data_path: "/path/to/your/dataset"  # Set this to your dataset path
 
-hf_token: "your_huggingface_token_here"  # Your HF token for model access
+# Optional: Adjust training parameters
+training:
+  num_train_epochs: 1                # Number of epochs
+  per_device_train_batch_size: 4     # Batch size per GPU
+  learning_rate: 2e-4                # Learning rate
 ```
 
-### 4. Run Fine-tuning
+### 5. Run Training
 
 ```bash
+# Basic training
+python run_finetuning.py --config config.yaml
+
+# With custom parameters
 python run_finetuning.py \
-    --data_path /path/to/your/dataset \
-    --hf_token your_hf_token \
-    --mode both \
-    --output_dir ./results/medgemma-finetuned
+  --config config.yaml \
+  --data_path /path/to/your/dataset \
+  --epochs 3 \
+  --batch_size 4
 ```
 
-## 🔧 Configuration Options
+### 6. Run Inference
+
+```bash
+# Single image
+python inference.py \
+  --model_path ./medgemma-4b-it-sft-lora-histopath \
+  --image_path /path/to/image.jpg
+
+# Batch inference on directory
+python inference.py \
+  --model_path ./medgemma-4b-it-sft-lora-histopath \
+  --directory_path /path/to/images/ \
+  --batch_size 8
+```
+
+## 📊 Evaluation
+
+### Comprehensive Evaluation
+
+```python
+from evaluation import MedGemmaEvaluator
+
+# Initialize evaluator
+evaluator = MedGemmaEvaluator("./medgemma-4b-it-sft-lora-histopath")
+
+# Generate complete evaluation report
+evaluator.generate_evaluation_report(
+    test_dataset,
+    output_dir="./evaluation_results",
+    include_baseline_comparison=True
+)
+```
+
+### Baseline Comparison
+
+The evaluation automatically compares your fine-tuned model with the baseline MedGemma-4B-IT model:
+
+```
+📈 Comparison Results:
+   Fine-tuned - Accuracy: 0.945, F1: 0.944
+   Baseline - Accuracy: 0.430, F1: 0.352
+   Improvement - Accuracy: 0.515, F1: 0.592
+```
+
+## 🏗️ Architecture Overview
+
+### Model Configuration
+- **Base Model**: `google/medgemma-4b-it` (instruction-tuned version)
+- **Quantization**: 4-bit with NF4 quantization type
+- **LoRA**: Rank 16, Alpha 16, targeting all linear layers
+- **Precision**: bfloat16 for training and inference
+
+### Training Pipeline
+1. **Data Loading**: Patient-based splitting to prevent leakage
+2. **Preprocessing**: Conversational format with tissue classification prompt
+3. **Model Setup**: Load with quantization and apply LoRA adapters
+4. **Training**: SFT (Supervised Fine-Tuning) with custom collate function
+5. **Evaluation**: Comprehensive metrics and baseline comparison
+
+### Key Components
+
+```
+├── config.py              # Configuration management
+├── config.yaml           # Training configuration
+├── medgemma_trainer.py    # Main training pipeline
+├── data_utils.py          # Data processing utilities
+├── evaluation.py          # Evaluation and metrics
+├── inference.py           # Inference pipeline
+└── run_finetuning.py     # Main execution script
+```
+
+## 🔧 Configuration
 
 ### Model Configuration
 ```yaml
 model:
-  model_id: "google/medgemma-4b-pt"
-  torch_dtype: "bfloat16"  # bfloat16, float16, float32
+  model_id: "google/medgemma-4b-it"
+  torch_dtype: "bfloat16"
   attn_implementation: "eager"
+```
+
+### Quantization Configuration
+```yaml
+quantization:
+  load_in_4bit: true
+  bnb_4bit_use_double_quant: true
+  bnb_4bit_quant_type: "nf4"
 ```
 
 ### LoRA Configuration
 ```yaml
 lora:
-  r: 16                    # Rank (8, 16, 32, 64)
-  lora_alpha: 16           # Scaling parameter
-  lora_dropout: 0.05       # Dropout rate
+  r: 16
+  lora_alpha: 16
+  lora_dropout: 0.05
   target_modules: "all-linear"
+  modules_to_save:
+    - "lm_head"
+    - "embed_tokens"
 ```
 
 ### Training Configuration
 ```yaml
 training:
-  num_epochs: 3
+  num_train_epochs: 1
   per_device_train_batch_size: 4
+  gradient_accumulation_steps: 4
   learning_rate: 2e-4
-  max_seq_length: 512
+  max_grad_norm: 0.3
+  warmup_ratio: 0.03
+  lr_scheduler_type: "linear"
 ```
 
-### Data Configuration
-```yaml
-data:
-  train_split: 0.7         # 70% for training
-  val_split: 0.15          # 15% for validation
-  test_split: 0.15         # 15% for testing
-  max_patches_per_patient: 10  # Limit patches per patient
-  min_patches_per_patient: 1   # Minimum required patches
-```
+## 📈 Performance
 
-## 🎮 Usage Examples
+Based on the official implementation results:
 
-### Training Only
-```bash
-python run_finetuning.py \
-    --data_path ./histopath_data \
-    --hf_token your_token \
-    --mode train \
-    --epochs 5 \
-    --batch_size 8 \
-    --learning_rate 1e-4
-```
+| Metric | Baseline (MedGemma-4B-IT) | Fine-tuned | Improvement |
+|--------|---------------------------|------------|-------------|
+| Accuracy | 0.430 | 0.945 | +0.515 |
+| F1 Score | 0.352 | 0.944 | +0.592 |
 
-### Evaluation Only
-```bash
-python run_finetuning.py \
-    --data_path ./histopath_data \
-    --hf_token your_token \
-    --mode evaluate \
-    --model_dir ./results/medgemma-finetuned \
-    --eval_output_dir ./evaluation_results
-```
+*Results on NCT-CRC-HE-100K histopathology dataset*
 
-### Custom Configuration
-```bash
-python run_finetuning.py \
-    --config custom_config.yaml \
-    --data_path ./histopath_data \
-    --hf_token your_token \
-    --lora_r 32 \
-    --epochs 10
-```
+## 🛠️ Advanced Usage
 
-## 📊 Evaluation Features
+### Custom Tissue Classes
 
-The evaluation pipeline provides:
+Modify `data_utils.py` to define your own tissue classes:
 
-### Patch-level Metrics
-- Accuracy, Precision, Recall, F1-score
-- Per-class performance metrics
-- Confusion matrix visualization
-
-### Patient-level Metrics
-- Aggregated predictions using majority voting
-- Patient-level accuracy and F1-scores
-- Handles multiple patches per patient
-
-### Visualization
-- Confusion matrices (patch and patient level)
-- Performance plots
-- Detailed classification reports
-
-## 🔬 Key Features for Histopathology
-
-### Patient-based Splitting
 ```python
-# Ensures no patient appears in both train and test sets
-def create_patient_based_splits(self):
-    # Groups patients by class for stratified splitting
-    # Prevents data leakage between splits
+TISSUE_CLASSES = [
+    "A: your_class_1",
+    "B: your_class_2",
+    # ... add your classes
+]
 ```
 
-### Multi-patch Handling
+### Custom Data Processing
+
+Extend `HistopathDataProcessor` for custom data formats:
+
 ```python
-# Configurable patch limits per patient
-max_patches_per_patient: 10  # Memory management
-min_patches_per_patient: 1   # Quality control
+class CustomDataProcessor(HistopathDataProcessor):
+    def _extract_patient_id(self, filename: str) -> str:
+        # Implement your patient ID extraction logic
+        return patient_id
 ```
 
-### Flexible Patient ID Extraction
-```python
-def _extract_patient_id(self, filename: str) -> str:
-    # Supports various naming conventions:
-    # "patient123_patch001.jpg" -> "patient123"
-    # "P123_001.png" -> "P123"
-    # "case_456_slide_1_patch_2.tif" -> "case_456"
+### Training Monitoring
+
+Monitor training with TensorBoard:
+
+```bash
+tensorboard --logdir ./medgemma-4b-it-sft-lora-histopath/logs
 ```
 
-## 💾 Output Files
-
-After training and evaluation, you'll find:
-
-```
-results/
-├── medgemma-finetuned/
-│   ├── adapter_config.json        # LoRA configuration
-│   ├── adapter_model.safetensors  # Fine-tuned weights
-│   ├── training_metadata.json     # Training information
-│   ├── config.yaml               # Used configuration
-│   └── logs/                     # Training logs
-└── evaluation_results/
-    ├── evaluation_report.json     # Detailed metrics
-    ├── evaluation_summary.txt     # Human-readable summary
-    ├── confusion_matrix_patch.png # Patch-level confusion matrix
-    └── confusion_matrix_patient.png # Patient-level confusion matrix
-```
-
-## 🚨 Requirements
-
-- **GPU**: CUDA-compatible GPU with ≥8GB VRAM
-- **Python**: 3.8+
-- **CUDA**: 11.7+ (for optimal performance)
-- **HuggingFace Token**: Required for MedGemma model access
-
-## 🔧 Troubleshooting
+## 🐛 Troubleshooting
 
 ### Common Issues
 
-1. **CUDA Out of Memory**:
+1. **GPU Memory Error**
+   - Reduce `per_device_train_batch_size`
+   - Increase `gradient_accumulation_steps`
+   - Enable `gradient_checkpointing`
+
+2. **HuggingFace Access Error**
+   - Ensure you have access to MedGemma model
+   - Verify your HF token has write permissions
+   - Check token is correctly set
+
+3. **Data Loading Error**
+   - Verify dataset structure matches expected format
+   - Check image file extensions are supported
+   - Ensure patient ID extraction works correctly
+
+### Performance Optimization
+
+1. **Memory Optimization**
    ```yaml
-   # Reduce batch size or max patches per patient
-   per_device_train_batch_size: 2
-   max_patches_per_patient: 5
+   training:
+     gradient_checkpointing: true
+     dataloader_num_workers: 0  # Reduce if memory issues
    ```
 
-2. **Model Access Issues**:
-   ```bash
-   # Ensure you have access to MedGemma model
-   huggingface-cli login
+2. **Speed Optimization**
+   ```yaml
+   training:
+     optim: "adamw_torch_fused"  # Faster optimizer
+     bf16: true                  # Use bfloat16
    ```
-
-3. **Data Path Issues**:
-   ```python
-   # Check data structure matches expected format
-   # Verify image file extensions are supported
-   ```
-
-## 📈 Performance Tips
-
-1. **For limited GPU memory**:
-   - Use smaller batch sizes
-   - Enable gradient checkpointing
-   - Reduce max_patches_per_patient
-
-2. **For faster training**:
-   - Use larger batch sizes
-   - Increase gradient_accumulation_steps
-   - Use bfloat16 precision
-
-3. **For better convergence**:
-   - Adjust learning rate
-   - Increase LoRA rank
-   - Add more training epochs
-
-## 🤝 Contributing
-
-Feel free to:
-- Report bugs or issues
-- Suggest improvements
-- Add support for new data formats
-- Extend evaluation metrics
-
-## 📄 License
-
-This project follows the same license as the underlying MedGemma model. Please refer to Google's MedGemma licensing terms.
-
-## 🙏 Acknowledgments
-
-- Google Health AI for the MedGemma model
-- Hugging Face for the transformers library
-- Microsoft for the LoRA implementation
 
 ## 📚 References
 
-- [MedGemma Model](https://huggingface.co/google/medgemma-4b-pt)
-- [LoRA Paper](https://arxiv.org/abs/2106.09685)
-- [Transformers Library](https://huggingface.co/docs/transformers/)
+- [MedGemma Official Repository](https://github.com/google-health/medgemma)
+- [MedGemma Paper](https://arxiv.org/abs/2404.18814)
+- [QLoRA Paper](https://arxiv.org/abs/2305.14314)
+- [NCT-CRC-HE-100K Dataset](https://zenodo.org/records/1214456)
+
+## 📄 License
+
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## 📞 Support
+
+For issues and questions:
+1. Check the troubleshooting section above
+2. Search existing GitHub issues
+3. Create a new issue with detailed information
 
 ---
 
-For questions or support, please check the documentation or create an issue in the repository.
+**Note**: This implementation is based on the official Google Health MedGemma fine-tuning notebook and follows the same architecture and training procedures for optimal compatibility and performance.

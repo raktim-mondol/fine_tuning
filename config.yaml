@@ -1,10 +1,18 @@
 # Model configuration
 model:
-  model_id: "google/medgemma-4b-pt"
+  model_id: "google/medgemma-4b-it"  # Updated to instruction-tuned version
   torch_dtype: "bfloat16"  # Options: bfloat16, float16, float32
   attn_implementation: "eager"  # Options: eager, flash_attention_2
   device_map: "auto"
   trust_remote_code: true
+
+# Quantization configuration (4-bit QLoRA)
+quantization:
+  load_in_4bit: true
+  bnb_4bit_use_double_quant: true
+  bnb_4bit_quant_type: "nf4"
+  bnb_4bit_compute_dtype: "bfloat16"
+  bnb_4bit_quant_storage: "bfloat16"
 
 # LoRA configuration
 lora:
@@ -14,41 +22,49 @@ lora:
   target_modules: "all-linear"  # Apply to all linear layers
   bias: "none"             # Don't adapt bias terms
   task_type: "CAUSAL_LM"
+  modules_to_save:         # Additional modules to save
+    - "lm_head"
+    - "embed_tokens"
 
-# Training configuration
+# Training configuration (using SFTConfig)
 training:
-  output_dir: "./medgemma-histpath-finetuned"
-  num_epochs: 3                          # Number of training epochs
-  per_device_train_batch_size: 4         # Training batch size per GPU
-  per_device_eval_batch_size: 4          # Evaluation batch size per GPU
-  gradient_accumulation_steps: 2         # Accumulate gradients over steps
-  learning_rate: 2e-4                    # Learning rate
-  weight_decay: 0.01                     # L2 regularization
-  max_grad_norm: 1.0                     # Gradient clipping
-  lr_scheduler_type: "cosine"            # Learning rate scheduler
-  warmup_ratio: 0.1                      # Warmup ratio
-  bf16: true                             # Use bfloat16 precision
-  dataloader_num_workers: 4              # Number of data loading workers
-  max_seq_length: 512                    # Maximum sequence length
-  save_strategy: "epoch"                 # When to save checkpoints
-  evaluation_strategy: "epoch"           # When to evaluate
-  logging_steps: 10                      # Log every N steps
-  save_total_limit: 3                    # Keep only best 3 checkpoints
-  load_best_model_at_end: true           # Load best model after training
-  metric_for_best_model: "eval_loss"     # Metric for best model selection
-  greater_is_better: false               # Lower eval_loss is better
-  early_stopping_patience: 2             # Early stopping patience
-  early_stopping_threshold: 0.01        # Early stopping threshold
+  output_dir: "medgemma-4b-it-sft-lora-histopath"
+  num_train_epochs: 1                        # Number of training epochs
+  per_device_train_batch_size: 4             # Training batch size per GPU
+  per_device_eval_batch_size: 4              # Evaluation batch size per GPU
+  gradient_accumulation_steps: 4             # Accumulate gradients over steps
+  gradient_checkpointing: true               # Enable gradient checkpointing
+  optim: "adamw_torch_fused"                 # Use fused AdamW optimizer
+  logging_steps: 50                          # Log every N steps
+  save_strategy: "epoch"                     # When to save checkpoints
+  eval_strategy: "steps"                     # When to evaluate
+  eval_steps: 50                             # Number of steps between evaluations
+  learning_rate: 2e-4                        # Learning rate based on QLoRA paper
+  bf16: true                                 # Use bfloat16 precision
+  max_grad_norm: 0.3                         # Max gradient norm based on QLoRA paper
+  warmup_ratio: 0.03                         # Warmup ratio based on QLoRA paper
+  lr_scheduler_type: "linear"                # Use linear learning rate scheduler
+  push_to_hub: true                          # Push model to Hub
+  report_to: "tensorboard"                   # Report metrics to tensorboard
+  gradient_checkpointing_kwargs:
+    use_reentrant: false                     # Set gradient checkpointing to non-reentrant
+  dataset_kwargs:
+    skip_prepare_dataset: true               # Skip default dataset preparation
+  remove_unused_columns: false               # Columns needed for data collator
+  label_names:
+    - "labels"                               # Input keys that correspond to labels
 
 # Data configuration
 data:
-  data_path: ""                          # TO BE SET: Path to your histopath dataset
-  train_split: 0.7                       # Training data fraction
-  val_split: 0.15                        # Validation data fraction  
-  test_split: 0.15                       # Test data fraction
-  max_patches_per_patient: 10            # Maximum patches per patient
-  min_patches_per_patient: 1             # Minimum patches required per patient
-  image_extensions:                      # Supported image formats
+  data_path: ""                              # TO BE SET: Path to your histopath dataset
+  train_split: 0.7                           # Training data fraction
+  val_split: 0.15                            # Validation data fraction  
+  test_split: 0.15                           # Test data fraction
+  max_patches_per_patient: 10                # Maximum patches per patient
+  min_patches_per_patient: 1                 # Minimum patches required per patient
+  train_size: 9000                           # Number of training samples
+  validation_size: 1000                      # Number of validation samples
+  image_extensions:                          # Supported image formats
     - ".jpg"
     - ".jpeg"
     - ".png"
@@ -57,5 +73,5 @@ data:
     - ".bmp"
 
 # General configuration
-seed: 42                                 # Random seed for reproducibility
-hf_token: ""                            # TO BE SET: Your HuggingFace token
+seed: 42                                     # Random seed for reproducibility
+hf_token: ""                                # TO BE SET: Your HuggingFace token

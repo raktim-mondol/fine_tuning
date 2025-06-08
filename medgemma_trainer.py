@@ -1,5 +1,6 @@
 """
 MedGemma Fine-tuning Implementation for Histopathology Classification
+Based on official Google Health MedGemma implementation
 """
 
 import os
@@ -12,8 +13,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from transformers import (
     AutoProcessor,
     AutoModelForImageTextToText,
-    TrainingArguments,
-    EarlyStoppingCallback,
+    BitsAndBytesConfig,
     set_seed
 )
 from datasets import DatasetDict
@@ -27,8 +27,8 @@ from data_utils import HistopathDataProcessor
 
 class MedGemmaFineTuner:
     """
-    Complete fine-tuning pipeline for MedGemma-4B-PT on histopathology data
-    Handles multiple patches per patient scenario
+    Complete fine-tuning pipeline for MedGemma-4B-IT on histopathology data
+    Based on official Google Health implementation
     """
     
     def __init__(self, config: Config):
@@ -67,10 +67,7 @@ class MedGemmaFineTuner:
         
         device_capability = torch.cuda.get_device_capability()
         if device_capability[0] < 8:
-            print(f"⚠️ GPU compute capability {device_capability} < 8.0")
-            print("⚠️ Consider using fp16 instead of bfloat16 for older GPUs")
-            # Adjust config for older GPUs
-            self.config.training.bf16 = False
+            raise ValueError("GPU does not support bfloat16, please use a GPU that supports bfloat16.")
         else:
             print(f"✅ GPU supports bfloat16 (compute capability: {device_capability})")
         
@@ -80,7 +77,7 @@ class MedGemmaFineTuner:
         print(f"🖥️ Using GPU: {gpu_name} ({gpu_memory:.1f}GB)")
     
     def load_model_and_processor(self):
-        """Load MedGemma model and processor with optimal configurations"""
+        """Load MedGemma model and processor with quantization"""
         print(f"📥 Loading model: {self.config.model.model_id}")
         
         # Convert string dtype to torch dtype
@@ -96,8 +93,16 @@ class MedGemmaFineTuner:
             "attn_implementation": self.config.model.attn_implementation,
             "torch_dtype": torch_dtype,
             "device_map": self.config.model.device_map,
-            "trust_remote_code": self.config.model.trust_remote_code
         }
+        
+        # Add quantization configuration
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=self.config.quantization.load_in_4bit,
+            bnb_4bit_use_double_quant=self.config.quantization.bnb_4bit_use_double_quant,
+            bnb_4bit_quant_type=self.config.quantization.bnb_4bit_quant_type,
+            bnb_4bit_compute_dtype=torch_dtype,
+            bnb_4bit_quant_storage=torch_dtype,
+        )
         
         try:
             # Load model and processor
@@ -107,15 +112,10 @@ class MedGemmaFineTuner:
             )
             self.processor = AutoProcessor.from_pretrained(self.config.model.model_id)
             
-            # Configure tokenizer for training
+            # Use right padding to avoid issues during training
             self.processor.tokenizer.padding_side = "right"
             
-            # Add special tokens if needed
-            if self.processor.tokenizer.pad_token is None:
-                self.processor.tokenizer.pad_token = self.processor.tokenizer.eos_token
-            
             print("✅ Model and processor loaded successfully")
-            print(f"📊 Model parameters: {self.model.num_parameters():,}")
             
         except Exception as e:
             raise RuntimeError(f"❌ Failed to load model: {str(e)}")
@@ -136,18 +136,18 @@ class MedGemmaFineTuner:
         return datasets, dataset_info
     
     def setup_lora(self) -> LoraConfig:
-        """Configure and apply LoRA to the model"""
+        """Configure LoRA for the model"""
         print("⚙️ Setting up LoRA configuration...")
         
         # Create LoRA configuration
         peft_config = LoraConfig(
-            r=self.config.lora.r,
             lora_alpha=self.config.lora.lora_alpha,
             lora_dropout=self.config.lora.lora_dropout,
+            r=self.config.lora.r,
             bias=self.config.lora.bias,
             target_modules=self.config.lora.target_modules,
-            task_type=TaskType.CAUSAL_LM,
-            modules_to_save=["lm_head", "embed_tokens"],
+            task_type=self.config.lora.task_type,
+            modules_to_save=self.config.lora.modules_to_save,
         )
         
         print(f"📋 LoRA Configuration:")
@@ -155,261 +155,196 @@ class MedGemmaFineTuner:
         print(f"   Alpha: {self.config.lora.lora_alpha}")
         print(f"   Dropout: {self.config.lora.lora_dropout}")
         print(f"   Target modules: {self.config.lora.target_modules}")
-        
-        # Apply LoRA to model
-        self.model = get_peft_model(self.model, peft_config)
-        
-        # Print trainable parameters
-        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        total_params = sum(p.numel() for p in self.model.parameters())
-        
-        print(f"🔢 Parameter Statistics:")
-        print(f"   Trainable parameters: {trainable_params:,}")
-        print(f"   Total parameters: {total_params:,}")
-        print(f"   Trainable percentage: {100 * trainable_params / total_params:.2f}%")
+        print(f"   Modules to save: {self.config.lora.modules_to_save}")
         
         return peft_config
     
     def create_collate_function(self):
-        """Create custom collation function for multimodal training"""
+        """Create custom collation function for multimodal training (official implementation)"""
         
         def collate_fn(examples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-            """Custom collation function for histopathology multimodal training"""
-            # Extract images and prepare text
-            images = []
+            """Custom collation function matching official implementation"""
             texts = []
+            images = []
             
             for example in examples:
-                # Add image to batch
-                images.append([example["image"]])
-                
-                # Apply chat template to create formatted conversation
-                formatted_text = self.processor.apply_chat_template(
-                    example["messages"],
-                    add_generation_prompt=False,
-                    tokenize=False
-                ).strip()
-                
-                texts.append(formatted_text)
-            
-            # Process batch with processor
-            batch = self.processor(
-                text=texts,
-                images=images,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=self.config.training.max_seq_length
-            )
-            
-            # Create labels for loss computation
+                images.append([example["image"].convert("RGB")])
+                texts.append(self.processor.apply_chat_template(
+                    example["messages"], add_generation_prompt=False, tokenize=False
+                ).strip())
+
+            # Tokenize the texts and process the images
+            batch = self.processor(text=texts, images=images, return_tensors="pt", padding=True)
+
+            # The labels are the input_ids, with the padding and image tokens masked in
+            # the loss computation
             labels = batch["input_ids"].clone()
-            
-            # Get special token IDs for masking
-            pad_token_id = self.processor.tokenizer.pad_token_id
-            
-            # Mask tokens that shouldn't contribute to loss
-            labels[labels == pad_token_id] = -100  # Mask padding tokens
-            
-            # Mask image tokens (model-specific - adjust as needed)
-            labels[labels == 262144] = -100  # Common image token ID
-            
+
+            # Mask image tokens
+            image_token_id = [
+                self.processor.tokenizer.convert_tokens_to_ids(
+                    self.processor.tokenizer.special_tokens_map["boi_token"]
+                )
+            ]
+            # Mask tokens that are not used in the loss computation
+            labels[labels == self.processor.tokenizer.pad_token_id] = -100
+            labels[labels == image_token_id] = -100
+            labels[labels == 262144] = -100
+
             batch["labels"] = labels
-            
             return batch
         
         return collate_fn
     
-    def train(self) -> 'SFTTrainer':
-        """Execute the fine-tuning process"""
-        print("🚀 Starting model training...")
+    def setup_training_args(self) -> SFTConfig:
+        """Setup training arguments using SFTConfig"""
+        print("⚙️ Setting up training configuration...")
         
-        if self.datasets is None:
-            raise ValueError("Datasets not prepared. Call prepare_datasets() first.")
-        
-        # Calculate steps
-        train_dataset_size = len(self.datasets["train"])
-        steps_per_epoch = train_dataset_size // (
-            self.config.training.per_device_train_batch_size * 
-            self.config.training.gradient_accumulation_steps
-        )
-        total_steps = steps_per_epoch * self.config.training.num_epochs
-        
-        print(f"📊 Training Configuration:")
-        print(f"   Dataset size: {train_dataset_size}")
-        print(f"   Batch size: {self.config.training.per_device_train_batch_size}")
-        print(f"   Gradient accumulation: {self.config.training.gradient_accumulation_steps}")
-        print(f"   Steps per epoch: {steps_per_epoch}")
-        print(f"   Total training steps: {total_steps}")
-        print(f"   Learning rate: {self.config.training.learning_rate}")
-        
-        # Create output directory
-        os.makedirs(self.config.training.output_dir, exist_ok=True)
-        
-        # Training arguments using SFTConfig
-        training_args = SFTConfig(
-            # Output and logging
+        args = SFTConfig(
             output_dir=self.config.training.output_dir,
-            run_name="medgemma-histpath-finetune",
-            
-            # Training hyperparameters
-            num_train_epochs=self.config.training.num_epochs,
+            num_train_epochs=self.config.training.num_train_epochs,
             per_device_train_batch_size=self.config.training.per_device_train_batch_size,
             per_device_eval_batch_size=self.config.training.per_device_eval_batch_size,
             gradient_accumulation_steps=self.config.training.gradient_accumulation_steps,
-            
-            # Optimization
-            learning_rate=self.config.training.learning_rate,
-            optim="adamw_torch_fused",
-            weight_decay=self.config.training.weight_decay,
-            max_grad_norm=self.config.training.max_grad_norm,
-            
-            # Learning rate scheduling
-            lr_scheduler_type=self.config.training.lr_scheduler_type,
-            warmup_ratio=self.config.training.warmup_ratio,
-            
-            # Precision and performance
-            bf16=self.config.training.bf16,
-            dataloader_num_workers=self.config.training.dataloader_num_workers,
-            remove_unused_columns=False,
-            
-            # Evaluation and saving
-            evaluation_strategy=self.config.training.evaluation_strategy,
-            save_strategy=self.config.training.save_strategy,
-            save_total_limit=self.config.training.save_total_limit,
-            load_best_model_at_end=self.config.training.load_best_model_at_end,
-            metric_for_best_model=self.config.training.metric_for_best_model,
-            greater_is_better=self.config.training.greater_is_better,
-            
-            # Logging
-            logging_dir=f"{self.config.training.output_dir}/logs",
-            logging_strategy="steps",
+            gradient_checkpointing=self.config.training.gradient_checkpointing,
+            optim=self.config.training.optim,
             logging_steps=self.config.training.logging_steps,
-            report_to=None,
-            
-            # Reproducibility
-            seed=self.config.seed,
-            data_seed=self.config.seed,
-            
-            # SFT-specific settings
-            max_seq_length=self.config.training.max_seq_length,
-            dataset_kwargs={"skip_prepare_dataset": True}
+            save_strategy=self.config.training.save_strategy,
+            eval_strategy=self.config.training.eval_strategy,
+            eval_steps=self.config.training.eval_steps,
+            learning_rate=self.config.training.learning_rate,
+            bf16=self.config.training.bf16,
+            max_grad_norm=self.config.training.max_grad_norm,
+            warmup_ratio=self.config.training.warmup_ratio,
+            lr_scheduler_type=self.config.training.lr_scheduler_type,
+            push_to_hub=self.config.training.push_to_hub,
+            report_to=self.config.training.report_to,
+            gradient_checkpointing_kwargs=self.config.training.gradient_checkpointing_kwargs,
+            dataset_kwargs=self.config.training.dataset_kwargs,
+            remove_unused_columns=self.config.training.remove_unused_columns,
+            label_names=self.config.training.label_names,
         )
         
-        # Create collation function
+        print(f"📋 Training Configuration:")
+        print(f"   Output directory: {args.output_dir}")
+        print(f"   Epochs: {args.num_train_epochs}")
+        print(f"   Batch size: {args.per_device_train_batch_size}")
+        print(f"   Learning rate: {args.learning_rate}")
+        print(f"   Gradient accumulation: {args.gradient_accumulation_steps}")
+        
+        return args
+    
+    def train(self) -> 'SFTTrainer':
+        """Execute the complete training pipeline"""
+        print("🚀 Starting MedGemma fine-tuning pipeline...")
+        
+        # Load model and processor
+        self.load_model_and_processor()
+        
+        # Prepare datasets
+        datasets, dataset_info = self.prepare_datasets()
+        
+        # Setup LoRA
+        peft_config = self.setup_lora()
+        
+        # Create collate function
         collate_fn = self.create_collate_function()
         
+        # Setup training arguments
+        training_args = self.setup_training_args()
+        
         # Create trainer
+        print("🔧 Initializing SFTTrainer...")
+        
+        # Use subset of validation set for faster evaluation (like official notebook)
+        eval_dataset = datasets["val"].shuffle().select(range(min(200, len(datasets["val"]))))
+        
         self.trainer = SFTTrainer(
             model=self.model,
             args=training_args,
-            train_dataset=self.datasets["train"],
-            eval_dataset=self.datasets.get("val", self.datasets.get("validation")),
+            train_dataset=datasets["train"],
+            eval_dataset=eval_dataset,
+            peft_config=peft_config,
+            processing_class=self.processor,
             data_collator=collate_fn,
-            callbacks=[
-                EarlyStoppingCallback(
-                    early_stopping_patience=self.config.training.early_stopping_patience,
-                    early_stopping_threshold=self.config.training.early_stopping_threshold
-                )
-            ]
         )
         
-        print("🎯 Training starting...")
+        print("🎯 Starting training...")
+        print(f"📊 Training samples: {len(datasets['train'])}")
+        print(f"📊 Validation samples: {len(eval_dataset)}")
         
-        try:
-            # Start training
-            train_result = self.trainer.train()
-            
-            print("✅ Training completed successfully!")
-            print(f"📈 Final training loss: {train_result.training_loss:.4f}")
-            
-            # Save final model
-            self.trainer.save_model(self.config.training.output_dir)
-            self.processor.save_pretrained(self.config.training.output_dir)
-            
-            # Save training metadata
-            self.save_training_metadata(train_result)
-            
-            print(f"💾 Model and metadata saved to {self.config.training.output_dir}")
-            
-            return self.trainer
-            
-        except Exception as e:
-            print(f"❌ Training failed: {str(e)}")
-            raise e
+        # Start training
+        train_result = self.trainer.train()
+        
+        print("✅ Training completed!")
+        
+        # Save the model
+        print("💾 Saving final model...")
+        self.trainer.save_model()
+        
+        # Save training metadata
+        self.save_training_metadata(train_result, dataset_info)
+        
+        return self.trainer
     
-    def save_training_metadata(self, train_result):
-        """Save training metadata and configuration"""
-        training_metadata = {
+    def save_training_metadata(self, train_result, dataset_info: Dict[str, Any]):
+        """Save training metadata and results"""
+        metadata = {
             "model_id": self.config.model.model_id,
-            "lora_config": {
-                "r": self.config.lora.r,
-                "lora_alpha": self.config.lora.lora_alpha,
-                "lora_dropout": self.config.lora.lora_dropout,
-                "target_modules": self.config.lora.target_modules
+            "training_config": self.config.training.__dict__,
+            "lora_config": self.config.lora.__dict__,
+            "dataset_info": dataset_info,
+            "train_result": {
+                "training_loss": train_result.training_loss,
+                "metrics": train_result.metrics if hasattr(train_result, 'metrics') else {},
             },
-            "training_args": {
-                "num_epochs": self.config.training.num_epochs,
-                "batch_size": self.config.training.per_device_train_batch_size,
-                "learning_rate": self.config.training.learning_rate,
-                "final_loss": train_result.training_loss
-            },
-            "dataset_info": self.dataset_info,
-            "config": {
-                "seed": self.config.seed,
-                "data_path": self.config.data.data_path
-            }
+            "final_model_path": self.config.training.output_dir
         }
         
         metadata_path = Path(self.config.training.output_dir) / "training_metadata.json"
-        with open(metadata_path, "w") as f:
-            json.dump(training_metadata, f, indent=2, default=str)
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Also save the full config
-        config_path = Path(self.config.training.output_dir) / "config.yaml"
-        self.config.to_yaml(str(config_path))
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2, default=str)
+        
+        print(f"💾 Training metadata saved to {metadata_path}")
     
     def run_complete_pipeline(self) -> 'SFTTrainer':
-        """Run the complete fine-tuning pipeline"""
-        print("🚀 Starting complete MedGemma fine-tuning pipeline...")
+        """
+        Run the complete fine-tuning pipeline
         
-        # Step 1: Load model and processor
-        self.load_model_and_processor()
-        
-        # Step 2: Prepare datasets
-        self.prepare_datasets()
-        
-        # Step 3: Setup LoRA
-        self.setup_lora()
-        
-        # Step 4: Train model
-        trainer = self.train()
-        
-        print("🎉 Complete pipeline finished successfully!")
-        
-        return trainer
+        Returns:
+            Trained SFTTrainer instance
+        """
+        try:
+            trainer = self.train()
+            print("🎉 Fine-tuning pipeline completed successfully!")
+            return trainer
+            
+        except Exception as e:
+            print(f"❌ Error during fine-tuning: {str(e)}")
+            raise
 
 
 def main():
-    """Main function to run the fine-tuning pipeline"""
+    """Main function to run fine-tuning"""
     # Load configuration
-    config = Config.from_yaml("config.yaml") if Path("config.yaml").exists() else Config(
-        model=ModelConfig(),
-        lora=LoRAConfig(),
-        training=TrainingConfig(),
-        data=DataConfig()
-    )
+    config = Config.from_yaml("config.yaml")
     
-    # Initialize fine-tuner
+    # Validate configuration
+    if not config.data.data_path:
+        raise ValueError("❌ Please set data_path in config.yaml")
+    
+    if not config.hf_token:
+        print("⚠️ Warning: No HuggingFace token provided. Make sure you have access to MedGemma.")
+    
+    # Initialize and run fine-tuning
     fine_tuner = MedGemmaFineTuner(config)
-    
-    # Run complete pipeline
     trainer = fine_tuner.run_complete_pipeline()
     
-    return fine_tuner, trainer
+    print("🎯 Fine-tuning completed! Model saved to:", config.training.output_dir)
+    print("📊 You can now use the fine-tuned model for inference or further evaluation.")
 
 
 if __name__ == "__main__":
-    from config import ModelConfig, LoRAConfig, TrainingConfig
-    
-    fine_tuner, trainer = main()
+    main()
